@@ -38,13 +38,15 @@ module Csvlint
         ESCAPE_RE[@re_chars][@re_esc][str]
       end
 
-      # Optimization: Disable the CSV library's converters feature.
-      # @see https://github.com/ruby/ruby/blob/v2_2_3/lib/csv.rb#L2100
-      def init_converters(options, field_name = :converters)
-        @converters = []
-        @header_converters = []
-        options.delete(:unconverted_fields)
-        options.delete(field_name)
+      if RUBY_VERSION < '2.5'
+        # Optimization: Disable the CSV library's converters feature.
+        # @see https://github.com/ruby/ruby/blob/v2_2_3/lib/csv.rb#L2100
+        def init_converters(options, field_name = :converters)
+          @converters = []
+          @header_converters = []
+          options.delete(:unconverted_fields)
+          options.delete(field_name)
+        end
       end
     end
 
@@ -57,6 +59,7 @@ module Csvlint
         "Illegal quoting" => :whitespace,
         "Unclosed quoted field" => :unclosed_quote,
         "Unquoted fields do not allow \\r or \\n" => :line_breaks,
+        "Any value after quoted field isn't allowed" => :stray_quote
     }
 
     def initialize(source, dialect = {}, schema = nil, options = {})
@@ -179,7 +182,7 @@ module Csvlint
       @csv_options[:encoding] = @encoding
 
       begin
-        row = LineCSV.parse_line(stream, @csv_options)
+        row = LineCSV.parse_line(stream, **@csv_options)
       rescue LineCSV::MalformedCSVError => e
         build_exception_messages(e, stream, current_line)
       end
@@ -250,7 +253,7 @@ module Csvlint
         if rel == "describedby" && param == "type" && ["application/csvm+json", "application/ld+json", "application/json"].include?(param_value)
           begin
             url = URI.join(@source_url, uri)
-            schema = Schema.load_from_json(url)
+            schema = Schema.load_from_uri(url)
             if schema.instance_of? Csvlint::Csvw::TableGroup
               if schema.tables[@source_url]
                 @schema = schema
@@ -434,7 +437,8 @@ module Csvlint
         when StringIO
           return
         when File
-          @source_url = "file:#{URI.encode(File.expand_path(@source))}"
+          uri_parser = URI::Parser.new
+          @source_url = "file:#{uri_parser.escape(File.expand_path(@source))}"
         else
           @source_url = @source
       end
@@ -449,7 +453,7 @@ module Csvlint
       if @source_url =~ /^http(s)?/
         begin
           well_known_uri = URI.join(@source_url, "/.well-known/csvm")
-          paths = open(well_known_uri).read.split("\n")
+          paths = URI.open(well_known_uri.to_s).read.split("\n")
         rescue OpenURI::HTTPError, URI::BadURIError
         end
       end
@@ -460,7 +464,7 @@ module Csvlint
           path = template.expand('url' => @source_url)
           url = URI.join(@source_url, path)
           url = File.new(url.to_s.sub(/^file:/, "")) if url.to_s =~ /^file:/
-          schema = Schema.load_from_json(url)
+          schema = Schema.load_from_uri(url)
           if schema.instance_of? Csvlint::Csvw::TableGroup
             if schema.tables[@source_url]
               @schema = schema
